@@ -1,6 +1,8 @@
 package ssatr.device;
 
+import java.util.Locale;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * TASK PERIODIC, cu perioada T = periodMs: fiecare job citește senzorul și
@@ -47,6 +49,47 @@ public class PeriodicTelemetryTask implements Runnable {
         //
         // periodMs se poate schimba în timpul rulării (comanda SET_INTERVAL),
         // deci citiți-l la fiecare job.
+
+
+        // fixarea momentului de start
+        long nextReleaseNano = System.nanoTime();
+
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                //citire senzor
+                double temperature = sensor.read();
+                long timestamp = System.currentTimeMillis(); //temperatura cu punct zecimal
+
+                // mesaj "deviceId;timestamp;temperatura"
+                String payload = String.format(Locale.US, "%s;%d;%.2f", deviceId, timestamp, temperature);
+                mqtt.publish(Config.telemetryTopic(deviceId), payload);
+
+                // se pune valoarea in coada pt sporadic daca este mai mare
+                if (temperature > threshold) {
+                    alarmEvents.offer(temperature);
+                }
+
+                // urmatorul moment fix pe grila
+                nextReleaseNano += periodMs * 1_000_000L;//1 ms
+
+                // asteptarea exacta pana la grila dar fara deriva
+                long now = System.nanoTime();
+                long sleepTimeNano = nextReleaseNano - now;
+
+                if (sleepTimeNano > 0) {
+                    TimeUnit.NANOSECONDS.sleep(sleepTimeNano);
+                } else {
+                    // daca s-a depasit grila, reset grila la momentul curent
+                    nextReleaseNano = System.nanoTime();
+                }
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                System.err.println("[" + deviceId + "] Eroare in taskul periodic : " + e.getMessage());
+            }
+        }
     }
 
     public void setPeriodMs(long periodMs) {

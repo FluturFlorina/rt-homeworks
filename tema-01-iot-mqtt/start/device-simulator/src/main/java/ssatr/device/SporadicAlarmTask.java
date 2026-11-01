@@ -1,5 +1,6 @@
 package ssatr.device;
 
+import java.util.Locale;
 import java.util.concurrent.BlockingQueue;
 
 /**
@@ -19,10 +20,15 @@ public class SporadicAlarmTask implements Runnable {
     private final MqttConnection mqtt;
     private final BlockingQueue<Double> alarmEvents;
 
-    public SporadicAlarmTask(String deviceId, MqttConnection mqtt, BlockingQueue<Double> alarmEvents) {
+    private long lastRelease = 0;
+    private final PeriodicTelemetryTask telemetryTask;
+
+    public SporadicAlarmTask(String deviceId, MqttConnection mqtt, BlockingQueue<Double> alarmEvents,
+                             PeriodicTelemetryTask telemetryTask) {
         this.deviceId = deviceId;
         this.mqtt = mqtt;
         this.alarmEvents = alarmEvents;
+        this.telemetryTask = telemetryTask;
     }
 
     @Override
@@ -37,5 +43,37 @@ public class SporadicAlarmTask implements Runnable {
         //      citit din PeriodicTelemetryTask; alegeți și justificați în raport)
         //
         // Vezi exemplul exemple/01-taskuri/.../SporadicTaskExample.java
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                // asteapta urmatorul eveniment din coada
+                Double temperature = alarmEvents.take();
+                long now = System.currentTimeMillis();
+
+                // verifica intervalul minim intre sosiri
+                //respingi evenimentul daca au trecut mai putin de MIN_INTERARRIVAL_MS
+                long sinceLast = now - lastRelease;
+                if (lastRelease > 0 && sinceLast < MIN_INTERARRIVAL_MS) {
+                    System.out.printf(Locale.US,
+                            "   [sporadic] [%s] RESPINS : au trecut doar %d ms (interval minim %d ms)%n",
+                            deviceId, sinceLast, MIN_INTERARRIVAL_MS);
+                    continue;
+                }
+                lastRelease = now;
+
+                //citim pragul dinamic
+                double threshold = telemetryTask.getThreshold();
+
+                // publicare pmesaj "deviceId;timestamp;temperatura;prag"
+               // double threshold = 28.0;
+                String payload = String.format(Locale.US, "%s;%d;%.2f;%.2f",
+                        deviceId, now, temperature, threshold);
+
+                mqtt.publish(Config.alarmTopic(deviceId), payload);
+                System.out.printf(Locale.US, "   [sporadic] [%s] ALARMA TRIMISA: %s%n", deviceId, payload);
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
